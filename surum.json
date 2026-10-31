@@ -1,6 +1,8 @@
 {
-  "surum": "3.3",
-  "notlar": "Güncellemeden sonra 'Yenilikler' penceresi gösteriliyor.\nOtomatik güncelleme sistemi test sürümü.",
-  "deb": "https://raw.githubusercontent.com/orhankader80-beep/ytmp3/main/dagitim/ytmp3_3.3_all.deb",
-  "py": "https://raw.githubusercontent.com/orhankader80-beep/ytmp3/main/ytmp3.py"
+  "surum": "3.4",
+  "notlar": "Windows desteği: artık .exe kurulum dosyası var\n📱 Telefondan kullan: QR kodu okut, iPhone veya Android'den indir",
+  "deb": "https://github.com/orhankader80-beep/ytmp3/releases/download/v3.4/ytmp3_3.4_all.deb",
+  "py": "https://raw.githubusercontent.com/orhankader80-beep/ytmp3/v3.4/ytmp3.py",
+  "exe_kurulum": "https://github.com/orhankader80-beep/ytmp3/releases/download/v3.4/YouTubeMP3-Kurulum.exe",
+  "exe_tasinabilir": "https://github.com/orhankader80-beep/ytmp3/releases/download/v3.4/YouTubeMP3-Tasinabilir-Windows.zip"
 }
