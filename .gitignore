@@ -5,4 +5,3 @@ dist/
 cikti/
 *.spec
 *.deb
-!dagitim/*.deb
