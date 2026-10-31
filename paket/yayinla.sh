@@ -9,7 +9,6 @@ VER="$(grep -oP '^VERSION = "\K[^"]+' ytmp3.py)"
 DEPO="$(grep -oP '^DEPO = "\K[^"]+' ytmp3.py)"
 git add -A
 git commit -m "Sürüm $VER" || true
-git tag "v$VER"
 git pull --rebase origin main
-git push origin main "v$VER"
+git push origin main
 echo "Derleniyor: https://github.com/$DEPO/actions"

@@ -1,26 +1,49 @@
-# Yeni sürüm etiketi (ör. v3.4) gönderilince Linux .deb ve Windows kurulum dosyalarını
-# derler, GitHub "Releases" sayfasında yayınlar ve surum.json'u günceller.
+# ytmp3.py içindeki VERSION değişince Linux .deb ve Windows kurulum dosyalarını derler,
+# GitHub "Releases" sayfasında yayınlar (etiketi kendisi oluşturur) ve surum.json'u günceller.
 name: Yayınla
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: [ytmp3.py, .github/workflows/yayinla.yml]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: yayinla
+  cancel-in-progress: false
+
 jobs:
+  kontrol:
+    runs-on: ubuntu-latest
+    outputs:
+      surum: ${{ steps.s.outputs.surum }}
+      yeni: ${{ steps.s.outputs.yeni }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(grep -oP '^VERSION = "\K[^"]+' ytmp3.py)
+          echo "surum=$VER" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VER" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$VER zaten yayınlanmış, atlanıyor"; echo "yeni=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "yeni=true" >> "$GITHUB_OUTPUT"
+          fi
+
   linux:
+    needs: kontrol
+    if: needs.kontrol.outputs.yeni == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Sürüm etiketle uyumlu mu?
-        run: |
-          VER=$(grep -oP '^VERSION = "\K[^"]+' ytmp3.py)
-          test "v$VER" = "${GITHUB_REF_NAME}" || { echo "ytmp3.py VERSION ($VER) etiketle ($GITHUB_REF_NAME) uyuşmuyor"; exit 1; }
       - name: .deb paketi
         run: PY=python bash paket/deb_olustur.sh
       - uses: actions/upload-artifact@v4
@@ -29,6 +52,8 @@ jobs:
           path: "*.deb"
 
   windows:
+    needs: kontrol
+    if: needs.kontrol.outputs.yeni == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,8 +95,10 @@ jobs:
           path: cikti/*
 
   yayin:
-    needs: [linux, windows]
+    needs: [kontrol, linux, windows]
     runs-on: ubuntu-latest
+    env:
+      VER: ${{ needs.kontrol.outputs.surum }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,9 +111,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF_NAME}"; VER="${TAG#v}"
-          git fetch --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
-          git show "$TAG:ytmp3.py" > /tmp/ytmp3.py
+          TAG="v$VER"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:ytmp3.py" > /tmp/ytmp3.py
           python3 - "$VER" <<'P'
           import ast, sys
           kaynak = open("/tmp/ytmp3.py", encoding="utf-8").read()
@@ -102,10 +129,10 @@ jobs:
           """)
           P
           ls -la dosyalar
-          gh release create "$TAG" dosyalar/* --title "YouTube MP3 $VER" --notes-file notlar.md
+          gh release create "$TAG" dosyalar/* --target "$GITHUB_SHA" --title "YouTube MP3 $VER" --notes-file notlar.md
       - name: surum.json güncelle
         run: |
-          TAG="${GITHUB_REF_NAME}"; VER="${TAG#v}"
+          TAG="v$VER"
           python3 - "$VER" "$TAG" "$GITHUB_REPOSITORY" <<'P'
           import json, sys
           ver, tag, depo = sys.argv[1:]
@@ -123,4 +150,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add surum.json
           git commit -m "surum.json: $VER"
+          git pull --rebase origin main
           git push origin main
