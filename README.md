@@ -4,7 +4,7 @@ YouTube videolarını ve playlist'leri MP3 olarak indiren, modern arayüzlü Par
 
 ## Kurulum
 
-1. **[ytmp3_3.2_all.deb dosyasını indir](https://raw.githubusercontent.com/orhankader80-beep/ytmp3/main/dagitim/ytmp3_3.2_all.deb)**
+1. **[ytmp3_3.3_all.deb dosyasını indir](https://raw.githubusercontent.com/orhankader80-beep/ytmp3/main/dagitim/ytmp3_3.3_all.deb)**
 2. İndirilen dosyaya çift tıkla ve **Kur**'a bas.
 3. Uygulama menüsünde **YouTube MP3** olarak çıkar.
 

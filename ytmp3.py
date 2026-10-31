@@ -36,7 +36,11 @@ except ImportError as e:
     print(f"Eksik kütüphane: {e}\nProgramı yeniden kurun.")
     sys.exit(1)
 
-VERSION = "3.2"
+VERSION = "3.3"
+YENILIKLER = [
+    "Güncellemeden sonra 'Yenilikler' penceresi gösteriliyor",
+    "Otomatik güncelleme sistemi test sürümü",
+]
 CONFIG_FILE = (APP_DIR / "ayarlar.json") if PORTABLE else Path.home() / ".config" / "ytmp3" / "ayarlar.json"
 
 BASLAT_SH = r'''#!/usr/bin/env bash
@@ -237,7 +241,7 @@ class Ayarlar(dict):
             tema="dark", kalite="192", kapak=True, klasor=varsayilan_klasor(), mod="pc",
             renk="Kırmızı", ozel_renk="", ad="", baslik="YouTube MP3", boyut="Normal",
             dosya_adi="Şarkı adı", playlist_klasor=True, numara=True,
-            bildirim=True, ses=True, klasoru_ac=False, pano_otomatik=True, gecmis=[])
+            bildirim=True, ses=True, klasoru_ac=False, pano_otomatik=True, gecmis=[], son_surum="")
         try:
             self.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
         except (OSError, ValueError):
@@ -282,6 +286,7 @@ class Uygulama(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.kapat)
         self._gecmisi_yukle()
         self.after(1500, self.arka_planda_kontrol)
+        self.after(800, self.yenilikleri_goster)
         if self.ayar["pano_otomatik"]:
             self.after(400, self.panodan_otomatik)
 
@@ -464,6 +469,27 @@ class Uygulama(ctk.CTk):
                 self.ui(durum="Kurulum penceresi açıldı", detay="Kurduktan sonra programı yeniden açın")
                 self.after(0, self._guncelle_btn_normal)
         threading.Thread(target=is_, daemon=True).start()
+
+    def yenilikleri_goster(self):
+        """Güncellemeden sonraki ilk açılışta yenilikleri gösterir."""
+        onceki = self.ayar["son_surum"]
+        self.ayar["son_surum"] = VERSION
+        self.ayar.kaydet()
+        if not onceki or onceki == VERSION:
+            return
+        p = ctk.CTkToplevel(self)
+        p.title("Yenilikler")
+        p.geometry("440x300")
+        p.transient(self)
+        p.after(100, p.grab_set)
+        ctk.CTkLabel(p, text="🎉", font=ctk.CTkFont(size=40)).pack(pady=(18, 0))
+        ctk.CTkLabel(p, text=f"Sürüm {VERSION}'e hoş geldin!", font=ctk.CTkFont(size=18, weight="bold")).pack()
+        ctk.CTkLabel(p, text=f"{onceki} → {VERSION}", text_color=("gray40", "gray60")).pack(pady=(0, 10))
+        ctk.CTkLabel(p, text="\n".join("•  " + y for y in YENILIKLER), justify="left", wraplength=380).pack(
+            padx=24, anchor="w")
+        ctk.CTkButton(p, text="Harika!", height=38, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      font=ctk.CTkFont(size=14, weight="bold"), command=p.destroy).pack(
+            side="bottom", fill="x", padx=24, pady=18)
 
     def arka_planda_kontrol(self):
         """Açılışta sessizce bakar; yeni sürüm varsa butonu vurgular."""
