@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""YouTube -> MP3 indirici (modern arayüz, USB / taşınabilir mod destekli)."""
+"""YouTube -> MP3 indirici (Linux / Windows, USB ve telefon desteği)."""
 import json
 import subprocess
 from datetime import datetime
@@ -10,21 +10,49 @@ import threading
 import webbrowser
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent
+WINDOWS = sys.platform == "win32"
+DONDURULMUS = getattr(sys, "frozen", False)  # Windows .exe (PyInstaller) içinde mi?
+APP_DIR = Path(sys.executable).resolve().parent if DONDURULMUS else Path(__file__).resolve().parent
 LIB_DIR = APP_DIR / "lib"
 PORTABLE = (APP_DIR / "PORTABLE").exists()
+
+if WINDOWS:
+    _yerel = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ytmp3"
+    _ayar_dizini = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "ytmp3"
+else:
+    _yerel = Path.home() / ".local" / "share" / "ytmp3"
+    _ayar_dizini = Path.home() / ".config" / "ytmp3"
 # Uygulama içinden indirilen yeni yt-dlp sürümü (yazılabilir yerde durur)
-GUNCEL_DIR = APP_DIR if PORTABLE else Path.home() / ".local" / "share" / "ytmp3"
+GUNCEL_DIR = APP_DIR if PORTABLE else _yerel
+ONBELLEK = (APP_DIR / "onbellek") if PORTABLE else (
+    _yerel / "onbellek" if WINDOWS else Path.home() / ".cache" / "ytmp3")
+CONFIG_FILE = (APP_DIR / "ayarlar.json") if PORTABLE else _ayar_dizini / "ayarlar.json"
 YTDLP_ZIP = GUNCEL_DIR / "yt-dlp.zip"
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
 # Uygulamanın yeni sürümleri burada yayınlanır
 DEPO = "orhankader80-beep/ytmp3"
 SURUM_URL = f"https://raw.githubusercontent.com/{DEPO}/main/surum.json"
+SURUMLER_SAYFASI = f"https://github.com/{DEPO}/releases/latest"
 
 if LIB_DIR.is_dir():
     sys.path.insert(0, str(LIB_DIR))
 if YTDLP_ZIP.is_file():
-    sys.path.insert(0, str(YTDLP_ZIP))
+    if DONDURULMUS:
+        # .exe içindeki eski yt-dlp yerine indirilen yenisini kullan
+        import zipimport
+
+        class _YtdlpZipBulucu:
+            def find_spec(self, ad, yol=None, hedef=None):
+                if ad != "yt_dlp" and not ad.startswith("yt_dlp."):
+                    return None
+                parcalar = ad.split(".")
+                try:
+                    return zipimport.zipimporter(os.path.join(str(YTDLP_ZIP), *parcalar[:-1])).find_spec(ad)
+                except Exception:
+                    return None
+        sys.meta_path.insert(0, _YtdlpZipBulucu())
+    else:
+        sys.path.insert(0, str(YTDLP_ZIP))
 
 try:
     import customtkinter as ctk
@@ -36,12 +64,11 @@ except ImportError as e:
     print(f"Eksik kütüphane: {e}\nProgramı yeniden kurun.")
     sys.exit(1)
 
-VERSION = "3.3"
+VERSION = "3.4"
 YENILIKLER = [
-    "Güncellemeden sonra 'Yenilikler' penceresi gösteriliyor",
-    "Otomatik güncelleme sistemi test sürümü",
+    "Windows desteği: artık .exe kurulum dosyası var",
+    "📱 Telefondan kullan: QR kodu okut, iPhone veya Android'den indir",
 ]
-CONFIG_FILE = (APP_DIR / "ayarlar.json") if PORTABLE else Path.home() / ".config" / "ytmp3" / "ayarlar.json"
 
 BASLAT_SH = r'''#!/usr/bin/env bash
 # USB'den YouTube MP3'ü başlatır.  Kullanım:  bash BASLAT.sh
@@ -57,6 +84,33 @@ exec python3 "$DIR/ytmp3.py"
 '''
 
 
+def diske_yaz():
+    if hasattr(os, "sync"):
+        os.sync()
+
+
+def dosya_ac(yol):
+    """Klasörü / dosyayı sistemin dosya yöneticisinde açar."""
+    yol = str(yol)
+    if WINDOWS:
+        os.startfile(yol)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", yol])
+    elif shutil.which("xdg-open"):
+        subprocess.Popen(["xdg-open", yol])
+    else:
+        webbrowser.open(Path(yol).as_uri())
+
+
+def indir_dosyaya(url, hedef, zaman=120):
+    import urllib.request
+    gecici = Path(str(hedef) + ".part")
+    with urllib.request.urlopen(url, timeout=zaman) as r, open(gecici, "wb") as f:
+        shutil.copyfileobj(r, f)
+    os.replace(gecici, hedef)
+    return hedef
+
+
 def surum_tuple(v):
     return tuple(int(x) for x in str(v).split(".") if x.isdigit())
 
@@ -67,47 +121,51 @@ def uygulama_surumu_kontrol():
     istek = urllib.request.Request(SURUM_URL, headers={"Cache-Control": "no-cache"})
     with urllib.request.urlopen(istek, timeout=15) as r:
         bilgi = json.loads(r.read().decode("utf-8"))
+    if WINDOWS and not bilgi.get("exe_kurulum"):
+        return None  # Bu sürümün Windows dosyası henüz yok
     return bilgi if surum_tuple(bilgi["surum"]) > surum_tuple(VERSION) else None
 
 
 def uygulamayi_guncelle(bilgi):
-    """Yeni sürümü indirip kurar. Başarılıysa True döndürür."""
-    import urllib.request
+    """Yeni sürümü indirip kurar.
+    "tamam": kuruldu, yeniden başlat · "cik": kurulum başladı, program kapanmalı · "sayfa": sayfa açıldı"""
+    ONBELLEK.mkdir(parents=True, exist_ok=True)
+    if WINDOWS:
+        if PORTABLE or not DONDURULMUS:
+            webbrowser.open(SURUMLER_SAYFASI)
+            return "sayfa"
+        kurulum = indir_dosyaya(bilgi["exe_kurulum"], ONBELLEK / f"YouTubeMP3-Kurulum-{bilgi['surum']}.exe")
+        # Sessiz kurulum; bitince program kendiliğinden yeniden açılır
+        subprocess.Popen([str(kurulum), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+        return "cik"
     if PORTABLE:
         # USB kopyası: sadece program dosyası değiştirilir
-        yeni = APP_DIR / "ytmp3.py.yeni"
-        with urllib.request.urlopen(bilgi["py"], timeout=60) as r, open(yeni, "wb") as f:
-            shutil.copyfileobj(r, f)
-        os.replace(yeni, APP_DIR / "ytmp3.py")
-        os.sync()
-        return True
-    onbellek = Path.home() / ".cache" / "ytmp3"
-    onbellek.mkdir(parents=True, exist_ok=True)
-    deb = onbellek / f"ytmp3_{bilgi['surum']}_all.deb"
-    with urllib.request.urlopen(bilgi["deb"], timeout=120) as r, open(deb, "wb") as f:
-        shutil.copyfileobj(r, f)
+        indir_dosyaya(bilgi["py"], APP_DIR / "ytmp3.py", 60)
+        diske_yaz()
+        return "tamam"
+    deb = indir_dosyaya(bilgi["deb"], ONBELLEK / f"ytmp3_{bilgi['surum']}_all.deb")
     if shutil.which("pkexec"):
         # Şifre penceresi açılır, paket kurulur
         sonuc = subprocess.run(["pkexec", "apt-get", "install", "-y", "--reinstall", str(deb)],
                                capture_output=True, text=True)
         if sonuc.returncode == 0:
-            return True
+            return "tamam"
         if sonuc.returncode in (126, 127):  # şifre penceresi iptal edildi
             raise RuntimeError("Kurulum iptal edildi.")
         raise RuntimeError((sonuc.stderr or sonuc.stdout).strip()[-400:])
     # pkexec yoksa Pardus paket kurucusunu aç
     subprocess.Popen(["xdg-open", str(deb)])
-    return False
+    return "sayfa"
 
 
 def ytdlp_guncelle():
     """En yeni yt-dlp'yi indirir. Yeni sürüm numarasını döndürür."""
     import urllib.request
+    import zipfile
     GUNCEL_DIR.mkdir(parents=True, exist_ok=True)
     gecici = YTDLP_ZIP.with_suffix(".tmp")
     with urllib.request.urlopen(YTDLP_URL, timeout=60) as r, open(gecici, "wb") as f:
         shutil.copyfileobj(r, f)
-    import zipfile
     with zipfile.ZipFile(gecici) as z:
         surum_kodu = z.read("yt_dlp/version.py").decode()
     os.replace(gecici, YTDLP_ZIP)
@@ -120,23 +178,30 @@ def ytdlp_guncelle():
 def usbye_kopyala(usb_yolu):
     """Programın taşınabilir kopyasını USB'ye yazar."""
     hedef = Path(usb_yolu) / "YTMP3"
-    if hedef.exists():
-        shutil.rmtree(hedef / "lib", ignore_errors=True)
-    hedef.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(APP_DIR / "ytmp3.py", hedef / "ytmp3.py")
-    if LIB_DIR.is_dir():
-        shutil.copytree(LIB_DIR, hedef / "lib", ignore=shutil.ignore_patterns("__pycache__"))
+    if DONDURULMUS:
+        # Windows: program klasörünün tamamı kopyalanır, USB'de .exe'ye çift tıklanır
+        shutil.copytree(APP_DIR, hedef, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("unins*", "ayarlar.json", "onbellek"))
+        nasil = ("Bu USB'yi herhangi bir Windows bilgisayara takın.\n"
+                 "YTMP3 klasöründeki 'YouTube MP3.exe' dosyasına çift tıklayın.\n\n")
+    else:
+        if hedef.exists():
+            shutil.rmtree(hedef / "lib", ignore_errors=True)
+        hedef.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(APP_DIR / "ytmp3.py", hedef / "ytmp3.py")
+        if LIB_DIR.is_dir():
+            shutil.copytree(LIB_DIR, hedef / "lib", ignore=shutil.ignore_patterns("__pycache__"))
+        (hedef / "BASLAT.sh").write_text(BASLAT_SH, encoding="utf-8")
+        nasil = ("Bu USB'yi herhangi bir Pardus / Linux bilgisayara takın.\n"
+                 "YTMP3 klasöründe sağ tık > 'Terminalde aç' deyip şunu yazın:\n\n"
+                 "    bash BASLAT.sh\n\n")
     if YTDLP_ZIP.is_file():
         shutil.copy2(YTDLP_ZIP, hedef / "yt-dlp.zip")
     (hedef / "PORTABLE").write_text("")
-    (hedef / "BASLAT.sh").write_text(BASLAT_SH, encoding="utf-8")
     (hedef / "NASIL_ACILIR.txt").write_text(
-        "Bu USB'yi herhangi bir Pardus / Linux bilgisayara takın.\n"
-        "YTMP3 klasöründe sağ tık > 'Terminalde aç' deyip şunu yazın:\n\n"
-        "    bash BASLAT.sh\n\n"
-        "İndirilen müzikler USB'deki 'Muzikler' klasörüne kaydedilir.\n", encoding="utf-8")
+        nasil + "İndirilen müzikler USB'deki 'Muzikler' klasörüne kaydedilir.\n", encoding="utf-8")
     (Path(usb_yolu) / "Muzikler").mkdir(exist_ok=True)
-    os.sync()
+    diske_yaz()
     return hedef
 
 ACCENT = "#E5383B"
@@ -211,6 +276,24 @@ def varsayilan_klasor():
 
 def usb_listesi():
     """Takılı USB / harici diskleri bulur: [(ad, yol, bos_gb)]"""
+    if WINDOWS:
+        import ctypes
+        import string
+        k32 = ctypes.windll.kernel32
+        surucler = []
+        maske = k32.GetLogicalDrives()
+        for i, harf in enumerate(string.ascii_uppercase):
+            kok = f"{harf}:\\"
+            if not maske >> i & 1 or k32.GetDriveTypeW(kok) != 2:  # 2 = çıkarılabilir disk
+                continue
+            etiket = ctypes.create_unicode_buffer(261)
+            k32.GetVolumeInformationW(kok, etiket, 261, None, None, None, None, 0)
+            try:
+                bos = shutil.disk_usage(kok).free / 1024**3
+            except OSError:
+                continue
+            surucler.append((f"{etiket.value or 'USB'} ({harf}:)", kok, bos))
+        return surucler
     user = os.environ.get("USER") or Path.home().name
     surucler = []
     for kok in (Path("/media") / user, Path("/run/media") / user, Path("/media")):
@@ -228,11 +311,271 @@ def usb_listesi():
 
 
 def ffmpeg_yolu():
-    """Taşınabilir modda USB'deki ffmpeg'i kullan (BASLAT.sh çalıştırılabilir kopya hazırlar)."""
+    """Windows'ta programla gelen ffmpeg'i, Linux'ta sistemdekini kullan."""
+    gomulu = APP_DIR / "ffmpeg"
+    if (gomulu / "ffmpeg.exe").exists():
+        return str(gomulu)
     kopya = os.environ.get("YTMP3_FFMPEG")
     if kopya and Path(kopya).exists():
         return kopya
     return None
+
+
+
+# ---------------------------------------------------------------------------
+# 📱 Telefondan kullanım: aynı Wi-Fi'deki telefon tarayıcıdan bağlanır
+# ---------------------------------------------------------------------------
+TELEFON_SAYFASI = r"""<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="__RENK__">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.json?k=__ANAHTAR__">
+<link rel="apple-touch-icon" href="/ikon.png">
+<title>YouTube MP3</title>
+<style>
+:root{--a:__RENK__;--bg:#f2f2f5;--kart:#fff;--yazi:#16161a;--soluk:#6b6b76;--cizgi:#e2e2e8}
+@media (prefers-color-scheme:dark){:root{--bg:#121214;--kart:#1e1e22;--yazi:#f1f1f4;--soluk:#9a9aa6;--cizgi:#2e2e34}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--yazi);font:16px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;
+padding:max(16px,env(safe-area-inset-top)) 16px 32px}
+.ust{display:flex;align-items:center;gap:12px;margin:8px 0 18px}
+.logo{width:44px;height:44px;border-radius:12px;background:var(--a);color:#fff;display:grid;place-items:center;font-size:20px}
+h1{font-size:21px;margin:0}.alt{color:var(--soluk);font-size:13px}
+.kart{background:var(--kart);border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid var(--cizgi)}
+input{width:100%;font-size:16px;padding:14px;border-radius:12px;border:1px solid var(--cizgi);background:var(--bg);color:var(--yazi)}
+.kalite{display:flex;gap:6px;margin:12px 0}
+.kalite button{flex:1;padding:10px 0;border-radius:10px;border:1px solid var(--cizgi);background:var(--bg);color:var(--yazi);font-size:15px}
+.kalite button.secili{background:var(--a);border-color:var(--a);color:#fff}
+.buyuk{width:100%;padding:15px;border:0;border-radius:14px;background:var(--a);color:#fff;font-size:17px;font-weight:600}
+.buyuk:disabled{opacity:.5}
+.is .baslik{font-weight:600;word-break:break-word}.is .durum{color:var(--soluk);font-size:13px;margin:4px 0 8px}
+.cubuk{height:8px;border-radius:4px;background:var(--cizgi);overflow:hidden}.cubuk i{display:block;height:100%;background:var(--a);width:0;transition:width .4s}
+.dosya{display:block;margin-top:10px;padding:12px;text-align:center;border-radius:12px;background:var(--a);color:#fff;text-decoration:none;font-weight:600}
+.hata{color:#e5383b}.bos{text-align:center;color:var(--soluk);font-size:14px;padding:8px}
+.not{color:var(--soluk);font-size:12px;text-align:center;margin-top:18px}
+</style></head><body>
+<div class="ust"><div class="logo">▶</div><div><h1>YouTube MP3</h1><div class="alt">Bilgisayarınız üzerinden indirir</div></div></div>
+<div class="kart">
+ <input id="link" type="url" inputmode="url" placeholder="YouTube linkini yapıştır" autocomplete="off">
+ <div class="kalite" id="kalite"><button data-k="128">128</button><button data-k="192">192</button><button data-k="256">256</button><button data-k="320">320</button></div>
+ <button class="buyuk" id="indir">⬇ MP3 Olarak İndir</button>
+</div>
+<div id="isler"></div>
+<div class="not">İpucu: Paylaş menüsünden "Ana Ekrana Ekle" ile uygulama gibi kullanabilirsiniz.</div>
+<script>
+const K="__ANAHTAR__";let kalite="__KALITE__";
+const kb=document.querySelectorAll("#kalite button");
+function ks(){kb.forEach(b=>b.classList.toggle("secili",b.dataset.k==kalite))}
+kb.forEach(b=>b.onclick=()=>{kalite=b.dataset.k;ks()});ks();
+const btn=document.getElementById("indir"),link=document.getElementById("link");
+btn.onclick=async()=>{const u=link.value.trim();if(!u){link.focus();return}
+ btn.disabled=true;
+ try{const r=await fetch("/api/indir?k="+K,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:u,kalite})});
+  if(!r.ok)throw 0;link.value="";yenile()}catch(e){alert("Bilgisayara ulaşılamadı. Program açık mı?")}
+ btn.disabled=false};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function yenile(){try{const r=await fetch("/api/isler?k="+K);const isler=await r.json();
+ const d=document.getElementById("isler");
+ if(!isler.length){d.innerHTML='<div class="bos">Henüz indirme yok</div>';return}
+ d.innerHTML=isler.map(j=>`<div class="kart is"><div class="baslik">${esc(j.baslik)}</div>
+  <div class="durum ${j.durum=="hata"?"hata":""}">${esc(j.mesaj)}</div>
+  ${j.durum=="bitti"||j.durum=="hata"?"":`<div class="cubuk"><i style="width:${Math.round(j.oran*100)}%"></i></div>`}
+  ${j.dosyalar.map((f,i)=>`<a class="dosya" href="/dosya/${j.id}/${i}?k=${K}" download>⬇ ${esc(f)}</a>`).join("")}</div>`).join("")
+}catch(e){}}
+yenile();setInterval(yenile,1200);
+</script></body></html>"""
+
+
+def yerel_ip():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def ikon_png(boyut=180):
+    """Ana ekran ikonu (kırmızı kare + ▶) için küçük bir PNG üretir."""
+    import struct
+    import zlib
+    r_, g, b = (int(ACCENT[i:i + 2], 16) for i in (1, 3, 5))
+    satirlar = []
+    for y in range(boyut):
+        satir = bytearray([0])
+        for x in range(boyut):
+            ux, uy = x / boyut, y / boyut
+            ucgen = 0.38 <= ux <= 0.68 and abs(uy - 0.5) <= (0.68 - ux) * 0.58
+            satir += bytes((255, 255, 255) if ucgen else (r_, g, b))
+        satirlar.append(bytes(satir))
+
+    def parca(tur, veri):
+        return struct.pack(">I", len(veri)) + tur + veri + struct.pack(">I", zlib.crc32(tur + veri) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + parca(b"IHDR", struct.pack(">IIBBBBB", boyut, boyut, 8, 2, 0, 0, 0))
+            + parca(b"IDAT", zlib.compress(b"".join(satirlar), 9)) + parca(b"IEND", b""))
+
+
+class TelefonSunucusu:
+    def __init__(self, uygulama):
+        import queue
+        import secrets
+        self.app = uygulama
+        if not uygulama.ayar.get("telefon_anahtar"):
+            uygulama.ayar["telefon_anahtar"] = secrets.token_urlsafe(9)
+            uygulama.ayar.kaydet()
+        self.anahtar = uygulama.ayar["telefon_anahtar"]
+        self.isler = {}
+        self.sira = 0
+        self.kuyruk = queue.Queue()
+        self.httpd = None
+        self.adres = ""
+        self.klasor = ONBELLEK / "telefon"
+        shutil.rmtree(self.klasor, ignore_errors=True)  # önceki oturumun dosyaları
+
+    def calisiyor(self):
+        return self.httpd is not None
+
+    def baslat(self):
+        from http.server import ThreadingHTTPServer
+        isleyici = self._isleyici_sinifi()
+        for port in (8765, 8766, 8767, 8768, 0):
+            try:
+                self.httpd = ThreadingHTTPServer(("0.0.0.0", port), isleyici)
+                break
+            except OSError:
+                continue
+        self.httpd.daemon_threads = True
+        port = self.httpd.server_address[1]
+        self.adres = f"http://{yerel_ip()}:{port}/?k={self.anahtar}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=self._isci, daemon=True).start()
+
+    def durdur(self):
+        if self.httpd:
+            h, self.httpd = self.httpd, None
+            threading.Thread(target=lambda: (h.shutdown(), h.server_close()), daemon=True).start()
+            self.kuyruk.put(None)
+
+    # --- indirme işleri ---
+    def is_ekle(self, url, kalite):
+        self.sira += 1
+        is_id = str(self.sira)
+        self.isler[is_id] = dict(id=is_id, url=url, kalite=kalite, baslik=url, durum="sirada",
+                                 mesaj="Sırada bekliyor...", oran=0.0, dosyalar=[], yollar=[])
+        self.kuyruk.put(is_id)
+        return is_id
+
+    def _isci(self):
+        while self.httpd is not None:
+            is_id = self.kuyruk.get()
+            if is_id is None:
+                return
+            j = self.isler[is_id]
+            klasor = self.klasor / is_id
+            klasor.mkdir(parents=True, exist_ok=True)
+
+            def kanca(d, j=j):
+                if d["status"] == "downloading":
+                    toplam = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    if toplam:
+                        j["oran"] = d.get("downloaded_bytes", 0) / toplam
+                    j["mesaj"] = "Bilgisayar indiriyor..."
+                elif d["status"] == "finished":
+                    j["oran"], j["mesaj"] = 1.0, "MP3'e dönüştürülüyor..."
+            try:
+                j.update(durum="indiriliyor", mesaj="Bilgi alınıyor...")
+                secenekler = self.app.ydl_secenekleri(str(klasor), kanca, guvenli_ad=True, kalite=j["kalite"])
+                secenekler["outtmpl"] = os.path.join(str(klasor), "%(playlist_index&{:02d} - |)s"
+                                                     + self.app._dosya_sablonu())
+                with YoutubeDL(secenekler) as ydl:
+                    bilgi = ydl.extract_info(j["url"], download=True)
+                j["baslik"] = (bilgi or {}).get("title") or j["url"]
+                yollar = sorted(klasor.glob("*.mp3"))
+                if not yollar:
+                    raise RuntimeError("MP3 oluşturulamadı")
+                j.update(yollar=[str(p) for p in yollar], dosyalar=[p.name for p in yollar], durum="bitti",
+                         mesaj=f"✔ Hazır · {len(yollar)} dosya" if len(yollar) > 1 else "✔ Hazır, telefona kaydedin")
+                self.app.log(f"📱 ✔ {j['baslik']}")
+            except Exception as e:
+                j.update(durum="hata", mesaj=f"Hata: {str(e)[:150]}")
+                self.app.log(f"📱 ✘ {j['url']}: {str(e)[:100]}")
+
+    def _isleyici_sinifi(self):
+        from http.server import BaseHTTPRequestHandler
+        from urllib.parse import urlparse, parse_qs, quote
+        import hmac
+        sunucu = self
+
+        class Isleyici(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _gonder(self, kod, govde, tur="application/json; charset=utf-8", ek=None):
+                if isinstance(govde, str):
+                    govde = govde.encode("utf-8")
+                self.send_response(kod)
+                self.send_header("Content-Type", tur)
+                self.send_header("Content-Length", str(len(govde)))
+                self.send_header("Cache-Control", "no-store")
+                for k, v in (ek or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(govde)
+
+            def _yetkili(self, q):
+                return hmac.compare_digest(q.get("k", [""])[0], sunucu.anahtar)
+
+            def do_GET(self):
+                u = urlparse(self.path)
+                q = parse_qs(u.query)
+                if u.path == "/ikon.png":
+                    return self._gonder(200, ikon_png(), "image/png")
+                if not self._yetkili(q):
+                    return self._gonder(403, "<h2 style='font-family:sans-serif'>Bağlantı geçersiz. "
+                                             "Bilgisayardaki QR kodu yeniden okutun.</h2>", "text/html; charset=utf-8")
+                if u.path == "/":
+                    sayfa = (TELEFON_SAYFASI.replace("__ANAHTAR__", sunucu.anahtar).replace("__RENK__", ACCENT)
+                             .replace("__KALITE__", sunucu.app.ayar["kalite"]))
+                    return self._gonder(200, sayfa, "text/html; charset=utf-8")
+                if u.path == "/manifest.json":
+                    return self._gonder(200, json.dumps({
+                        "name": "YouTube MP3", "short_name": "YT MP3", "display": "standalone",
+                        "start_url": f"/?k={sunucu.anahtar}", "theme_color": ACCENT, "background_color": ACCENT,
+                        "icons": [{"src": "/ikon.png", "sizes": "180x180", "type": "image/png"}]}))
+                if u.path == "/api/isler":
+                    liste = [{k: v for k, v in j.items() if k != "yollar"} for j in sunucu.isler.values()]
+                    return self._gonder(200, json.dumps(liste[::-1][:30], ensure_ascii=False))
+                if u.path.startswith("/dosya/"):
+                    try:
+                        _, _, is_id, no = u.path.split("/")
+                        yol = Path(sunucu.isler[is_id]["yollar"][int(no)])
+                        veri = yol.read_bytes()
+                    except (ValueError, KeyError, IndexError, OSError):
+                        return self._gonder(404, "{}")
+                    return self._gonder(200, veri, "audio/mpeg", {
+                        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(yol.name)}"})
+                self._gonder(404, "{}")
+
+            def do_POST(self):
+                u = urlparse(self.path)
+                if not self._yetkili(parse_qs(u.query)) or u.path != "/api/indir":
+                    return self._gonder(403, "{}")
+                try:
+                    uzunluk = min(int(self.headers.get("Content-Length", 0)), 10000)
+                    veri = json.loads(self.rfile.read(uzunluk) or b"{}")
+                    url = str(veri.get("url", "")).strip()
+                    kalite = str(veri.get("kalite", "192"))
+                    if not url.startswith(("http://", "https://")) or kalite not in ("128", "192", "256", "320"):
+                        raise ValueError
+                except ValueError:
+                    return self._gonder(400, "{}")
+                self._gonder(200, json.dumps({"id": sunucu.is_ekle(url, kalite)}))
+        return Isleyici
 
 
 class Ayarlar(dict):
@@ -241,7 +584,8 @@ class Ayarlar(dict):
             tema="dark", kalite="192", kapak=True, klasor=varsayilan_klasor(), mod="pc",
             renk="Kırmızı", ozel_renk="", ad="", baslik="YouTube MP3", boyut="Normal",
             dosya_adi="Şarkı adı", playlist_klasor=True, numara=True,
-            bildirim=True, ses=True, klasoru_ac=False, pano_otomatik=True, gecmis=[], son_surum="")
+            bildirim=True, ses=True, klasoru_ac=False, pano_otomatik=True, gecmis=[], son_surum="",
+            telefon_anahtar="")
         try:
             self.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
         except (OSError, ValueError):
@@ -270,6 +614,9 @@ class Uygulama(ctk.CTk):
         ctk.set_default_color_theme("blue")
         super().__init__()
         self.title(self.ayar["baslik"] or "YouTube MP3")
+        ikon = Path(getattr(sys, "_MEIPASS", APP_DIR)) / "ikon.ico"
+        if WINDOWS and ikon.exists():
+            self.iconbitmap(str(ikon))
         self.geometry("760x780")
         self.minsize(620, 600)
         self.calisiyor = False
@@ -399,8 +746,72 @@ class Uygulama(ctk.CTk):
         ctk.CTkButton(bar, text="📂 Klasörü aç", width=120, command=self.klasor_ac, **IKINCIL).pack(side="right")
         self.guncelle_btn = ctk.CTkButton(bar, text="🔄 Güncelle", width=110, command=self.guncelle, **IKINCIL)
         self.guncelle_btn.pack(side="right", padx=8)
+        self.telefon_btn = ctk.CTkButton(bar, text="📱 Telefon", width=100, command=self.telefon_penceresi,
+                                         **IKINCIL)
+        self.telefon_btn.pack(side="right")
         if not PORTABLE:
-            ctk.CTkButton(bar, text="🔌 USB'ye taşı", width=120, command=self.usb_tasi, **IKINCIL).pack(side="right")
+            ctk.CTkButton(bar, text="🔌 USB'ye taşı", width=120, command=self.usb_tasi, **IKINCIL).pack(side="right", padx=(0, 8))
+
+    # ---------- 📱 Telefondan kullan ----------
+    def telefon_penceresi(self):
+        if getattr(self, "_tel_pen", None) and self._tel_pen.winfo_exists():
+            self._tel_pen.focus()
+            return
+        if getattr(self, "telefon", None) is None:
+            self.telefon = TelefonSunucusu(self)
+        if not self.telefon.calisiyor():
+            try:
+                self.telefon.baslat()
+            except Exception as e:
+                messagebox.showerror("Telefon", f"Bağlantı başlatılamadı:\n{e}")
+                return
+            self.telefon_btn.configure(text="📱 Telefon ●", text_color=ACCENT)
+            self.log("📱 Telefon bağlantısı açıldı")
+        p = self._tel_pen = ctk.CTkToplevel(self)
+        p.title("Telefondan kullan")
+        p.geometry("400x510")
+        p.resizable(False, False)
+        p.transient(self)
+        ctk.CTkLabel(p, text="📱 Telefondan kullan", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(18, 2))
+        ctk.CTkLabel(p, text="Telefonun kamerasıyla QR kodu okut", text_color=("gray40", "gray60")).pack()
+
+        import tkinter as tk
+        import qrcode
+        qr = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr.add_data(self.telefon.adres)
+        qr.make(fit=True)
+        matris = qr.get_matrix()
+        hucre = max(4, 250 // len(matris))
+        boyut = hucre * len(matris)
+        tuval = tk.Canvas(p, width=boyut, height=boyut, bg="white", highlightthickness=0)
+        for y, satir in enumerate(matris):
+            for x, dolu in enumerate(satir):
+                if dolu:
+                    tuval.create_rectangle(x * hucre, y * hucre, (x + 1) * hucre, (y + 1) * hucre,
+                                           fill="black", outline="")
+        tuval.pack(pady=14)
+
+        adres = ctk.CTkEntry(p, justify="center", font=ctk.CTkFont(size=11))
+        adres.insert(0, self.telefon.adres)
+        adres.configure(state="readonly")
+        adres.pack(fill="x", padx=24)
+        ctk.CTkLabel(p, justify="left", wraplength=350, font=ctk.CTkFont(size=12),
+                     text_color=("gray30", "gray70"),
+                     text="• Telefon ve bilgisayar aynı Wi-Fi'de olmalı\n"
+                          "• Program açık kaldığı sürece çalışır\n"
+                          "• iPhone ve Android'de tarayıcıdan çalışır, kurulum gerekmez").pack(
+            anchor="w", padx=24, pady=10)
+
+        def durdur():
+            self.telefon.durdur()
+            self.telefon_btn.configure(text="📱 Telefon", text_color=IKINCIL["text_color"])
+            self.log("📱 Telefon bağlantısı kapatıldı")
+            p.destroy()
+        alt = ctk.CTkFrame(p, fg_color="transparent")
+        alt.pack(fill="x", padx=24, pady=(4, 18), side="bottom")
+        ctk.CTkButton(alt, text="Bağlantıyı kapat", command=durdur, **IKINCIL).pack(side="left")
+        ctk.CTkButton(alt, text="Tamam", fg_color=ACCENT, hover_color=ACCENT_HOVER, width=100,
+                      command=p.destroy).pack(side="right")
 
     def guncelle(self):
         if self.calisiyor:
@@ -453,20 +864,27 @@ class Uygulama(ctk.CTk):
 
         def is_():
             try:
-                tamam = uygulamayi_guncelle(bilgi)
+                sonuc = uygulamayi_guncelle(bilgi)
             except Exception as e:
                 err = str(e)
                 self.after(0, lambda: messagebox.showerror("Güncelleme", f"Kurulamadı:\n{err}"))
                 self.ui(durum="⚠ Güncelleme kurulamadı", detay=err)
                 self.after(0, self._guncelle_btn_normal)
                 return
-            if tamam:
+            if sonuc == "cik":
+                def kapat():
+                    self._ayarlari_topla()
+                    self.ayar.kaydet()
+                    self.destroy()
+                self.ui(durum="Kuruluyor...", detay="Program birazdan kendiliğinden yeniden açılacak")
+                self.after(1500, kapat)
+            elif sonuc == "tamam":
                 def bitir():
                     messagebox.showinfo("Güncelleme", f"Sürüm {bilgi['surum']} kuruldu!\nProgram yeniden açılıyor.")
                     self.yeniden_baslat()
                 self.after(0, bitir)
             else:
-                self.ui(durum="Kurulum penceresi açıldı", detay="Kurduktan sonra programı yeniden açın")
+                self.ui(durum="İndirme sayfası açıldı", detay="Yeni sürümü kurduktan sonra programı yeniden açın")
                 self.after(0, self._guncelle_btn_normal)
         threading.Thread(target=is_, daemon=True).start()
 
@@ -650,7 +1068,7 @@ class Uygulama(ctk.CTk):
         k_ac = kutu(d, 5, "İndirme bitince klasörü aç", "klasoru_ac")
 
         # --- Diğer ---
-        k_bi = kutu(o, 0, "Bitince masaüstü bildirimi göster", "bildirim")
+        k_bi = kutu(o, 0, "Bitince masaüstü bildirimi göster" if not WINDOWS else "Bitince bildir", "bildirim")
         k_se = kutu(o, 1, "Bitince ses çal", "ses")
         k_pa = kutu(o, 2, "Açılışta panodaki YouTube linkini otomatik ekle", "pano_otomatik")
 
@@ -667,8 +1085,9 @@ class Uygulama(ctk.CTk):
                 messagebox.showinfo("Kısayol", f"Masaüstüne kısayol eklendi:\n{yol}", parent=p)
             except Exception as e:
                 messagebox.showerror("Kısayol", f"Eklenemedi:\n{e}", parent=p)
-        ctk.CTkButton(o, text="🖥 Masaüstüne kısayol ekle", command=kisayol, **IKINCIL).grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(24, 0))
+        if not WINDOWS:  # Windows'ta kurulum programı kısayolu zaten ekler
+            ctk.CTkButton(o, text="🖥 Masaüstüne kısayol ekle", command=kisayol, **IKINCIL).grid(
+                row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(24, 0))
         ctk.CTkButton(o, text="🗑 İndirme geçmişini temizle", command=gecmis_sil, **IKINCIL).grid(
             row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(10, 0))
         ctk.CTkLabel(o, text=f"YouTube MP3 {VERSION}  ·  yt-dlp {yt_dlp.version.__version__}",
@@ -706,7 +1125,11 @@ class Uygulama(ctk.CTk):
         self._ayarlari_topla()
         self.ayar.kaydet()
         self.destroy()
-        os.execv(sys.executable, [sys.executable, str(APP_DIR / "ytmp3.py")])
+        komut = [sys.executable] if DONDURULMUS else [sys.executable, str(APP_DIR / "ytmp3.py")]
+        if WINDOWS:
+            subprocess.Popen(komut)
+            sys.exit(0)
+        os.execv(komut[0], komut)
 
     def _ayarlari_topla(self):
         self.ayar.update(kalite=self.kalite.get(), kapak=bool(self.kapak.get()))
@@ -759,7 +1182,7 @@ class Uygulama(ctk.CTk):
         k = self.hedef_klasor()
         if k:
             Path(k).mkdir(parents=True, exist_ok=True)
-            webbrowser.open(Path(k).as_uri())
+            dosya_ac(k)
 
     def _gecmisi_yukle(self):
         if self.ayar["gecmis"]:
@@ -844,25 +1267,7 @@ class Uygulama(ctk.CTk):
             elif d["status"] == "finished":
                 self.ui(oran=1, detay="MP3'e dönüştürülüyor...")
 
-        islemciler = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
-                       "preferredquality": self.ayar["kalite"]},
-                      {"key": "FFmpegMetadata"}]
-        if self.ayar["kapak"]:
-            islemciler.append({"key": "EmbedThumbnail"})
-        secenekler = {
-            "format": "bestaudio/best",
-            "outtmpl": os.path.join(hedef, self._dosya_sablonu()),
-            "postprocessors": islemciler,
-            "writethumbnail": bool(self.ayar["kapak"]),
-            "progress_hooks": [hook],
-            "windowsfilenames": usb,  # USB (FAT32) için güvenli dosya adları
-            "ignoreerrors": False,
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-        }
-        if ffmpeg_yolu():
-            secenekler["ffmpeg_location"] = ffmpeg_yolu()
+        secenekler = self.ydl_secenekleri(hedef, hook, guvenli_ad=usb)
 
         for i, url in enumerate(linkler, 1):
             if self.iptal:
@@ -904,6 +1309,28 @@ class Uygulama(ctk.CTk):
 
         self.after(0, lambda: self.bitti(basarili, hatali, hedef))
 
+    def ydl_secenekleri(self, hedef, kanca, guvenli_ad=False, kalite=None):
+        islemciler = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+                       "preferredquality": kalite or self.ayar["kalite"]},
+                      {"key": "FFmpegMetadata"}]
+        if self.ayar["kapak"]:
+            islemciler.append({"key": "EmbedThumbnail"})
+        secenekler = {
+            "format": "bestaudio/best",
+            "outtmpl": os.path.join(hedef, self._dosya_sablonu()),
+            "postprocessors": islemciler,
+            "writethumbnail": bool(self.ayar["kapak"]),
+            "progress_hooks": [kanca],
+            "windowsfilenames": guvenli_ad or WINDOWS,  # USB (FAT32) / telefon için güvenli dosya adları
+            "ignoreerrors": False,
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+        }
+        if ffmpeg_yolu():
+            secenekler["ffmpeg_location"] = ffmpeg_yolu()
+        return secenekler
+
     def _dosya_sablonu(self):
         return DOSYA_ADLARI.get(self.ayar["dosya_adi"], "%(title)s") + ".%(ext)s"
 
@@ -911,17 +1338,20 @@ class Uygulama(ctk.CTk):
         self.ayar.kaydet()
         if basarili or hatali:
             ozet = f"{basarili} şarkı indirildi" + (f", {hatali} hata" if hatali else "")
-            if self.ayar["bildirim"] and shutil.which("notify-send"):
+            if self.ayar["bildirim"] and not WINDOWS and shutil.which("notify-send"):
                 subprocess.Popen(["notify-send", "-i", "ytmp3", "-a", "YouTube MP3",
                                   "İndirme tamamlandı" if not hatali else "İndirme bitti", ozet])
-            if self.ayar["ses"]:
+            if self.ayar["ses"] and WINDOWS:
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+            elif self.ayar["ses"]:
                 ses = "/usr/share/sounds/freedesktop/stereo/complete.oga"
                 if Path(ses).exists() and shutil.which("paplay"):
                     subprocess.Popen(["paplay", ses])
                 else:
                     self.bell()
             if self.ayar["klasoru_ac"] and basarili:
-                webbrowser.open(Path(hedef).as_uri())
+                dosya_ac(hedef)
         self.calisiyor = False
         self.indir_btn.configure(state="normal", text="⬇  MP3 Olarak İndir")
         self.iptal_btn.configure(state="disabled")
@@ -931,6 +1361,8 @@ class Uygulama(ctk.CTk):
             self.link_kutu.delete("1.0", "end")
 
     def kapat(self):
+        if getattr(self, "telefon", None):
+            self.telefon.durdur()
         self._ayarlari_topla()
         self.ayar.kaydet()
         self.iptal = True
@@ -938,4 +1370,7 @@ class Uygulama(ctk.CTk):
 
 
 if __name__ == "__main__":
+    if "--surum" in sys.argv:
+        print(f"YouTube MP3 {VERSION} | yt-dlp {yt_dlp.version.__version__} ({yt_dlp.__file__})")
+        sys.exit(0)
     Uygulama().mainloop()

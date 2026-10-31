@@ -9,7 +9,7 @@ B="$(mktemp -d)/ytmp3_${VER}_all"
 mkdir -p "$B/DEBIAN" "$B/opt/ytmp3" "$B/usr/bin" "$B/usr/share/applications" \
          "$B/usr/share/icons/hicolor/scalable/apps"
 cp "$SRC/ytmp3.py" "$B/opt/ytmp3/"
-"$PY" -m pip install -q --no-cache-dir --no-compile --target "$B/opt/ytmp3/lib" yt-dlp customtkinter
+"$PY" -m pip install -q --no-cache-dir --no-compile --target "$B/opt/ytmp3/lib" yt-dlp customtkinter qrcode
 rm -rf "$B/opt/ytmp3/lib/bin" "$B/opt/ytmp3/lib/share"
 find "$B" -name __pycache__ -prune -exec rm -rf {} +
 

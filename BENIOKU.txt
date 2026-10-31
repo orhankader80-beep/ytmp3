@@ -1,27 +1,10 @@
-YouTube MP3 - Kurulum ve Kullanım
-=================================
+YouTube MP3 - Kısa Kılavuz
+==========================
+İndirme sayfası: https://github.com/orhankader80-beep/ytmp3/releases/latest
 
-KURULUM (Windows'taki gibi)
-  ytmp3_3.1_all.deb dosyasına çift tıklayın, açılan pencerede "Kur"a basın.
-  Gerekirse şifrenizi girin. Program uygulama menüsünde "YouTube MP3" olarak çıkar.
-  (Terminalle kurmak isterseniz: sudo apt install ./ytmp3_3.1_all.deb)
+Windows : YouTubeMP3-Kurulum.exe  -> çift tıkla, Kur
+Pardus  : ytmp3_X.X_all.deb       -> çift tıkla, Kur
+Telefon : Bilgisayardaki programda "📱 Telefon" -> QR kodu okut
 
-KALDIRMA
-  Uygulama mağazasından / Paket yöneticisinden "ytmp3" kaldırın
-  ya da: sudo apt remove ytmp3
-
-USB ÖZELLİKLERİ
-  - Kayıt yeri > "USB Bellek": MP3'ler doğrudan takılı USB'ye iner.
-  - "USB'ye taşı" butonu: Programın taşınabilir kopyasını USB'ye yazar.
-    Başka bilgisayarda YTMP3 klasöründe terminal açıp:  bash BASLAT.sh
-
-KİŞİSELLEŞTİRME (sağ üstteki ⚙ butonu)
-  - Adın (seni selamlar), program adı, 8 renk + özel renk, tema, yazı boyutu
-  - Dosya adı biçimi, playlist klasörü ve numaralandırma
-  - Bildirim, ses, panodan otomatik link ekleme
-  - Masaüstüne kısayol ekle
-
-İNDİRME BOZULURSA
-  Programdaki "Güncelle" butonuna basın, programı kapatıp açın.
-
+Güncellemek için programdaki "🔄 Güncelle" butonuna basın.
 Not: Yalnızca indirme hakkınız olan içerikler için kullanın.
